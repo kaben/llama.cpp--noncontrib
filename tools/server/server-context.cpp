@@ -5194,6 +5194,10 @@ std::unique_ptr<server_res_generator> server_routes::handle_slots_erase(const se
 
 std::unique_ptr<server_res_generator> server_routes::handle_embeddings_impl(const server_http_req & req, task_response_type res_type) {
     auto res = create_response();
+    json body = json::parse(req.body);
+    json prompt;
+    std::vector<server_tokens> tokenized_prompts;
+
     if (!params.embedding) {
         res->error(format_error_response("This server does not support embeddings. Start it with `--embeddings`", ERROR_TYPE_NOT_SUPPORTED));
         return res;
@@ -5201,20 +5205,6 @@ std::unique_ptr<server_res_generator> server_routes::handle_embeddings_impl(cons
 
     if (res_type != TASK_RESPONSE_TYPE_NONE && meta->pooling_type == LLAMA_POOLING_TYPE_NONE) {
         res->error(format_error_response("Pooling type 'none' is not OAI compatible. Please use a different pooling type", ERROR_TYPE_INVALID_REQUEST));
-        return res;
-    }
-
-    const json body = json::parse(req.body);
-
-    // for the shape of input/content, see tokenize_input_prompts()
-    json prompt;
-    if (body.count("input") != 0) {
-        prompt = body.at("input");
-    } else if (body.contains("content")) {
-        res_type = TASK_RESPONSE_TYPE_NONE; // "content" field is not OAI compatible
-        prompt = body.at("content");
-    } else {
-        res->error(format_error_response("\"input\" or \"content\" must be provided", ERROR_TYPE_INVALID_REQUEST));
         return res;
     }
 
@@ -5229,20 +5219,45 @@ std::unique_ptr<server_res_generator> server_routes::handle_embeddings_impl(cons
         }
     }
 
-    auto tokenized_prompts = tokenize_input_prompts(ctx_server.vocab, ctx_server.mctx, prompt, true, true);
-    for (const auto & tokens : tokenized_prompts) {
-        // this check is necessary for models that do not add BOS token to the input
-        if (tokens.empty()) {
-            res->error(format_error_response("Input content cannot be empty", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-    }
-
     int embd_normalize = params.embd_normalize;
     if (body.count("embd_normalize") != 0) {
         embd_normalize = body.at("embd_normalize");
         if (meta->pooling_type == LLAMA_POOLING_TYPE_NONE) {
             SRV_DBG("embd_normalize is not supported by pooling type %d, ignoring it\n", meta->pooling_type);
+        }
+    }
+
+    if (body.contains("messages")) {
+        std::vector<raw_buffer> files;
+        json data = oaicompat_chat_params_parse(body, meta->chat_params, files);
+        prompt = data.at("prompt");
+
+        if (!files.empty()) {
+            tokenized_prompts.push_back(process_mtmd_prompt(ctx_server.mctx, prompt.get<std::string>(), files));
+        } else {
+            tokenized_prompts = tokenize_input_prompts(ctx_server.vocab, ctx_server.mctx, prompt, true, true);
+        }
+
+    } else {
+        // for the shape of input/content, see tokenize_input_prompts()
+        if (body.count("input") != 0) {
+            prompt = body.at("input");
+        } else if (body.contains("content")) {
+            res_type = TASK_RESPONSE_TYPE_NONE; // "content" field is not OAI compatible
+            prompt = body.at("content");
+        } else {
+            res->error(format_error_response("\"input\" or \"content\" or \"messages\" must be provided", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        auto tokenized_prompts = tokenize_input_prompts(ctx_server.vocab, ctx_server.mctx, prompt, true, true);
+    }
+
+    for (const auto & tokens : tokenized_prompts) {
+        // this check is necessary for models that do not add BOS token to the input
+        if (tokens.empty()) {
+            res->error(format_error_response("Input content cannot be empty", ERROR_TYPE_INVALID_REQUEST));
+            return res;
         }
     }
 
