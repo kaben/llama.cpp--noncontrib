@@ -162,6 +162,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--trust-remote-code", action="store_true",
+        help=(
+            "Allow loading remote code. "
+            "WARNING: security vulnerability: possibility of malicious remote code. "
+            "Do not enable for unknown/untrusted models."
+        ),
+    )
+
     args = parser.parse_args()
     if not args.print_supported_models and args.model is None:
         parser.error("the following arguments are required: model")
@@ -234,7 +243,7 @@ def main() -> None:
     with torch.inference_mode():
         output_type = ftype_map[args.outtype]
         model_type = ModelType.MMPROJ if args.mmproj else ModelType.TEXT
-        hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+        hparams = ModelBase.load_hparams(dir_model, is_mistral_format, trust_remote_code=args.trust_remote_code)
         if not is_mistral_format:
             model_architecture = get_model_architecture(hparams, model_type)
             logger.info(f"Model architecture: {model_architecture}")
@@ -281,6 +290,7 @@ def main() -> None:
                                      target_model_dir=Path(args.target_model_dir) if args.target_model_dir else None,
                                      fuse_gate_up_exps=args.fuse_gate_up_exps,
                                      fp8_as_q8=args.fp8_as_q8,
+                                     trust_remote_code=args.trust_remote_code,
                                      )
 
         if args.vocab_only:
